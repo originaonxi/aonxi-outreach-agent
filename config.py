@@ -11,7 +11,7 @@ SMTP_USER = os.environ.get("SMTP_USER", "lifeislovesam@gmail.com")
 SMTP_PASS = os.environ.get("SMTP_PASS", "")
 AIRTABLE_API_KEY = os.environ.get("AIRTABLE_API_KEY", "")
 AIRTABLE_BASE_ID = os.environ.get("AIRTABLE_BASE_ID", "appJQFHuYU3NxZA8A")
-AIRTABLE_TABLE = "Aonxi_Outreach"
+AIRTABLE_TABLE = "Outreach"
 EXA_API_KEY = os.environ.get("EXA_API_KEY", "")
 GROK_API_KEY = os.environ.get("GROK_API_KEY", "")
 

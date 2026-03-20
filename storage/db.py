@@ -72,25 +72,61 @@ def mark_sent(email: str):
 
 
 def sync_airtable(company: dict, status: str = "Emailed"):
+    """Push record to Airtable Outreach table."""
     from config import AIRTABLE_API_KEY, AIRTABLE_BASE_ID, AIRTABLE_TABLE
     if not AIRTABLE_API_KEY:
         return
     try:
-        from pyairtable import Api
-        api = Api(AIRTABLE_API_KEY)
-        table = api.table(AIRTABLE_BASE_ID, AIRTABLE_TABLE)
-        table.create({
-            "Company": company.get("company", ""),
+        import requests
+        url = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}/{AIRTABLE_TABLE}"
+        headers = {
+            "Authorization": f"Bearer {AIRTABLE_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        # Map intent score to level
+        score = company.get("intent_score", 0)
+        intent_level = "High" if score >= 8 else ("Medium" if score >= 6 else "Low")
+
+        # Build signals text
+        signals = company.get("signals", [])
+        news = company.get("recent_news", "")
+        signal_text = ", ".join(signals)
+        if news:
+            signal_text += f"\nNews: {news[:200]}"
+
+        fields = {
             "Name": company.get("name", ""),
+            "Company": company.get("company", ""),
             "Title": company.get("title", ""),
             "Email": company.get("email", ""),
             "Vertical": company.get("vertical", ""),
-            "Intent Score": company.get("intent_score", 0),
-            "Why Now": company.get("why_now", "")[:200],
-            "Subject": company.get("email_subject", ""),
-            "Body": company.get("email_body", "")[:2000],
+            "Location": company.get("location", ""),
+            "Company Size": str(company.get("employees", "")),
+            "Intent Score": score,
+            "Intent Level": intent_level,
+            "Intent Signals": signal_text[:1000],
+            "Email Subject": company.get("email_subject", ""),
+            "Email Body": company.get("email_body", "")[:2000],
             "Status": status,
-            "Date": date.today().isoformat(),
-        })
+            "Source": company.get("source", "apollo"),
+            "LinkedIn URL": company.get("linkedin", ""),
+            "Date Added": date.today().isoformat(),
+            "Sent Date": date.today().isoformat(),
+            "Notes": f"Confidence: {company.get('email_confidence', 0)}/100",
+        }
+
+        r = requests.post(url, json={"fields": fields}, headers=headers, timeout=10)
+        if r.status_code in (200, 201):
+            return
+        elif r.status_code == 422:
+            # Some fields might not match select options — retry with text fields only
+            safe_fields = {k: v for k, v in fields.items()
+                          if k not in ("Vertical", "Intent Level", "Status", "Funding Stage")}
+            r2 = requests.post(url, json={"fields": safe_fields}, headers=headers, timeout=10)
+            if r2.status_code not in (200, 201):
+                print(f"  Airtable: field mismatch — {r2.status_code}")
+        else:
+            print(f"  Airtable: {r.status_code}")
     except Exception as e:
         print(f"  Airtable: {e}")
