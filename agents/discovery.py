@@ -13,7 +13,7 @@ from __future__ import annotations
 import random
 import time
 import requests
-from config import APOLLO_API_KEY, HUNTER_API_KEY, ICP
+from config import APOLLO_API_KEY, HUNTER_API_KEY, EXA_API_KEY, ICP
 
 SEARCH_URL = "https://api.apollo.io/v1/mixed_people/api_search"
 MATCH_URL = "https://api.apollo.io/v1/people/match"
@@ -36,10 +36,17 @@ def discover(seen_domains: set, per_vertical: int = 5) -> list[dict]:
     random.shuffle(verticals)
 
     for vertical in verticals:
-        # If both APIs are rate-limited, stop trying
+        # If both Apollo + Hunter are rate-limited, try Exa
         if _rate_limited and _hunter_limited:
-            print(f"  → Both Apollo + Hunter rate-limited. Try again in ~1 hour.")
-            break
+            if EXA_API_KEY:
+                print(f"  → {vertical['name']}: searching via Exa...")
+                found = _search_exa(vertical, seen_domains, per_vertical)
+                all_companies.extend(found)
+                print(f"    {len(found)} found")
+                continue
+            else:
+                print(f"  → All APIs rate-limited. Try again in ~1 hour.")
+                break
 
         print(f"  → {vertical['name']}: searching...")
         found = _search_apollo(vertical, seen_domains, per_vertical)
@@ -247,5 +254,91 @@ def _search_apollo(vertical: dict, seen_domains: set, limit: int) -> list[dict]:
 
         except Exception as e:
             print(f"    Apollo error: {e}")
+
+    return results
+
+
+def _search_exa(vertical: dict, seen_domains: set, limit: int) -> list[dict]:
+    """Fallback discovery via Exa company search + Claude email guessing."""
+    results = []
+    try:
+        from exa_py import Exa
+        import anthropic
+        from config import ANTHROPIC_API_KEY
+
+        exa = Exa(api_key=EXA_API_KEY)
+        claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+        keywords = list(vertical["keywords"])
+        random.shuffle(keywords)
+        query = f"{keywords[0]} company {' '.join(vertical['titles'][:2])} {random.choice(['startup', 'growing', 'scaling'])}"
+
+        search_results = exa.search_and_contents(
+            query,
+            type="auto",
+            num_results=limit * 3,
+            category="company",
+            text={"max_characters": 300},
+        )
+
+        if not search_results or not search_results.results:
+            return results
+
+        for r in search_results.results:
+            if len(results) >= limit:
+                break
+
+            domain = r.url.replace("https://", "").replace("http://", "").split("/")[0].replace("www.", "")
+            if not domain or domain in seen_domains:
+                continue
+
+            company_name = r.title or ""
+            description = r.text[:200] if hasattr(r, "text") and r.text else ""
+
+            try:
+                import json
+                msg = claude.messages.create(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=200,
+                    messages=[{"role": "user", "content": f"""Find the CEO/founder contact for {company_name} ({domain}).
+Description: {description}
+
+Return JSON only:
+{{"name": "full name", "title": "title", "email": "first@{domain}"}}
+Use the most common email pattern for this domain. JSON only."""}]
+                )
+                text = msg.content[0].text.strip()
+                if "```" in text:
+                    text = text.split("```")[1].replace("json", "", 1).split("```")[0]
+                contact = json.loads(text.strip())
+
+                seen_domains.add(domain)
+                results.append({
+                    "name": contact.get("name", "Founder"),
+                    "title": contact.get("title", "CEO"),
+                    "email": contact.get("email", f"info@{domain}"),
+                    "company": company_name,
+                    "domain": domain,
+                    "employees": 0,
+                    "industry": "",
+                    "location": "",
+                    "linkedin": "",
+                    "vertical": vertical["name"],
+                    "pain": vertical["pain"],
+                    "angle": vertical["angle"],
+                    "founded_year": None,
+                    "short_description": description,
+                    "annual_revenue": "",
+                    "technologies": [],
+                    "seniority": "founder",
+                    "headline": "",
+                    "source": "exa",
+                })
+                time.sleep(0.3)
+            except Exception:
+                continue
+
+    except Exception as e:
+        print(f"    Exa error: {e}")
 
     return results

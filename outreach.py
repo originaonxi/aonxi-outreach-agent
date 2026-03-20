@@ -35,6 +35,8 @@ from agents.intent import score
 from agents.signals import enrich_with_signals
 from agents.writer import write
 from agents.send_time import get_send_status
+from agents.data_sources import get_api_status
+from agents.channel_advisor import recommend_channels
 
 
 # ── COLORS ──────────────────────────────────────────────
@@ -119,15 +121,22 @@ def show_email(company: dict, idx: int, total: int):
     print(f"  {C.WHITE}└──────────────────────────────────────────────────────┘{C.RESET}")
 
 
-def git_push_results(sent: int, skipped: int, total: int):
+def git_push_results(sent: int, skipped: int, qualified: list[dict]):
     """Auto-push run results to git."""
     try:
         os.chdir(PROJECT_DIR)
-        # Stage the database (has the new prospects + feedback data)
-        subprocess.run(["git", "add", "aonxi.db"], capture_output=True, timeout=10)
+        subprocess.run(["git", "add", "-A"], capture_output=True, timeout=10)
+
+        # Build vertical breakdown
+        v_counts = {}
+        for c in qualified:
+            v = c.get("vertical", "Unknown")
+            v_counts[v] = v_counts.get(v, 0) + 1
+        v_str = ", ".join(f"{v}: {n}" for v, n in v_counts.items())
+
         msg = (
             f"Run {datetime.now().strftime('%Y-%m-%d %H:%M')}: "
-            f"{total} found, {sent} sent, {skipped} skipped"
+            f"{len(qualified)} qualified, {sent} sent, {skipped} skipped | {v_str}"
         )
         result = subprocess.run(
             ["git", "commit", "-m", msg],
@@ -139,9 +148,9 @@ def git_push_results(sent: int, skipped: int, total: int):
                 capture_output=True, text=True, timeout=30
             )
             if push.returncode == 0:
-                print(f"  {C.DIM}Git: pushed results{C.RESET}")
+                print(f"  {C.DIM}Git: pushed results to origin/main{C.RESET}")
             else:
-                print(f"  {C.DIM}Git: committed locally{C.RESET}")
+                print(f"  {C.DIM}Git: committed locally (push failed){C.RESET}")
     except Exception:
         pass
 
@@ -162,6 +171,11 @@ def run():
 
     init()
     init_learning_db()
+
+    # ── API STATUS ─────────────────────────────────────
+    print(f"  {C.BOLD}Connected APIs:{C.RESET}")
+    print(get_api_status())
+    print()
 
     # ── DISCOVER ───────────────────────────────────────
     seen = get_seen_domains()
@@ -282,8 +296,18 @@ def run():
     print(f"  {C.BOLD}{C.CYAN}│{C.RESET}  Run again anytime for fresh companies       {C.BOLD}{C.CYAN}│{C.RESET}")
     print(f"  {C.BOLD}{C.CYAN}└─────────────────────────────────────────────┘{C.RESET}")
 
+    # Channel recommendations
+    recs = recommend_channels()
+    if recs:
+        print(f"  {C.BOLD}{C.MAGENTA}CHANNEL RECOMMENDATIONS:{C.RESET}")
+        for r in recs:
+            p_color = C.RED if r["priority"] == "HIGH" else C.YELLOW
+            print(f"  {p_color}[{r['priority']}]{C.RESET} {r['channel']}: {r['action']}")
+            print(f"  {C.DIM}       Cost: {r['cost']} → {r['outcome']}{C.RESET}")
+        print()
+
     # Auto-push to git
-    git_push_results(sent, skipped, len(qualified))
+    git_push_results(sent, skipped, qualified)
     print()
 
 
