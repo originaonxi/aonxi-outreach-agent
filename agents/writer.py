@@ -1,19 +1,23 @@
 """
 Hyper-personalized cold email writer.
 
-Every email MUST open with ONE specific fact that proves
-we researched THIS company and nobody else.
+Aonxi is NOT an outreach tool. Aonxi builds a CUSTOM AI AGENT
+for each client that:
+- Pulls from 30+ data sources
+- Researches every prospect like a team of senior analysts
+- Micro-tests subject lines and angles automatically
+- Learns after every send — gets smarter every week
+- Books qualified meetings
+- Pay per meeting — zero cost until it delivers
 
-Not "you're growing fast." That's garbage.
-Instead: "Taktile's Agentic Decision Platform just launched
-for financial institutions" — something only they did.
-
-The email connects that fact to their pain, then to Aonxi.
-Under 100 words. Short. Specific. Human. Not corporate.
+Every line of every email must reference something TRUE and
+SPECIFIC about THIS company. No line should be sendable to
+any other company on earth.
 """
 
 from __future__ import annotations
 import json
+import re
 import uuid
 import requests
 import anthropic
@@ -21,121 +25,186 @@ from config import ANTHROPIC_API_KEY, GROK_API_KEY
 
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# Vertical-specific Aonxi positioning — not generic "we deliver meetings"
 VERTICAL_PITCH = {
     "SaaS": (
-        "We replace your SDR team with an AI agent that finds your ICP, "
-        "personalizes at scale, and books meetings. You pay per meeting."
+        "We build a custom AI agent for your exact ICP — "
+        "pulls 30+ data sources, researches every prospect "
+        "like a senior analyst, micro-tests angles, and books "
+        "qualified meetings. Pay per meeting. Zero SDR cost."
     ),
     "Professional Services": (
-        "We handle your entire new business pipeline — you focus on delivery, "
-        "we fill your calendar with qualified prospects who already said yes."
+        "We build a custom AI agent for your new business pipeline — "
+        "researches your exact target clients using 30+ data sources, "
+        "micro-tests outreach angles, and fills your calendar with "
+        "qualified prospects. Pay only when a meeting happens."
     ),
     "E-Commerce": (
-        "We find the B2B buyers and partners your brand needs — distributors, "
-        "wholesalers, retail chains — and get them on your calendar."
+        "We build a custom AI agent that finds your B2B buyers — "
+        "distributors, wholesalers, retail chains — using 30+ data "
+        "sources, micro-tests messaging, and books qualified meetings. "
+        "Pay per meeting."
     ),
     "Real Estate & Finance": (
-        "We find qualified investors, partners, or clients in your exact market. "
-        "You pay only when they show up to the meeting."
+        "We build a custom AI agent for your exact market — "
+        "researches qualified investors, partners, or clients "
+        "using 30+ data sources, and books qualified meetings. "
+        "Pay only when they show up."
     ),
 }
+
+FORBIDDEN = [
+    "I noticed", "I came across", "reaching out", "hope this finds",
+    "just wanted to", "I wanted to", "touch base", "quick question",
+    "circle back", "follow up", "synergy", "leverage", "game-changing",
+    "innovative", "seamless", "world-class", "best-in-class",
+    "cutting-edge", "excited to", "passionate about", "I hope",
+    "robust", "scalable solution",
+]
+
+EXAMPLES = """
+EXAMPLE 1 — SaaS (post-acquisition):
+Subject: Your pipeline after the DealHub deal
+Hi David,
+DealHub acquired Subskribe to go agentic — your pipeline needs to match that ambition without rebuilding headcount.
+We build a custom AI agent for your exact ICP: pulls from 30+ data sources, researches each prospect like a senior analyst, micro-tests subject lines and angles, and books qualified meetings. You pay only when a meeting lands. Zero SDR cost.
+This is not a tool. It is your outbound team — fully autonomous, learning after every send, getting sharper every week.
+Non-competing — no other quote-to-revenue company in your market gets this.
+Is this worth 15 minutes?
+Sam | origin@aonxi.com | aonxi.today
+
+EXAMPLE 2 — E-Commerce:
+Subject: Merchant acquisition on autopilot
+Hi Amir,
+Cart.com powers thousands of storefronts — but enterprise merchant acquisition is still manual.
+We build a custom AI agent that handles your entire B2B outbound: researches distributors, wholesalers, and retail chains using 30+ data sources, micro-tests messaging until something converts, and books qualified meetings. Pay per meeting.
+30+ clients running this. No competing commerce platforms in the same geo.
+How's enterprise merchant pipeline looking right now?
+Sam | origin@aonxi.com | aonxi.today
+
+EXAMPLE 3 — Agency:
+Subject: New business without the BD grind
+Hi Marcus,
+SPEED Agency is growing fast — but new business development still eats time you should spend on clients.
+We build a custom AI agent for your agency: pulls data from 30+ sources to find your exact ICP brands, researches each one like a senior strategist, micro-tests outreach angles, and books qualified intro calls. Pay only when a meeting happens.
+This is not an email tool. It is your entire new business function — running 24/7, learning after every send.
+Non-competing — no other agency in your market gets this.
+Open to seeing it in action?
+Sam | origin@aonxi.com | aonxi.today
+"""
+
+
+def _extract_specifics(company: dict) -> list[str]:
+    """Pull every specific, usable fact about this company."""
+    specifics = []
+    news = company.get("recent_news", "") or ""
+    desc = company.get("short_description", "") or ""
+    x = company.get("x_signals", "") or ""
+    all_text = f"{news} {desc} {x}"
+
+    # Revenue numbers
+    for match in re.findall(r'\$[\d,.]+[MBK]?\s*(?:ARR|revenue|raised|funding|valuation)?', all_text, re.IGNORECASE):
+        specifics.append(f"Revenue/funding: {match.strip()}")
+
+    # Percentages
+    for match in re.findall(r'[\d.]+%\s*(?:YoY|growth|increase|decline)?', all_text):
+        specifics.append(f"Growth metric: {match.strip()}")
+
+    # Employee count
+    emp = company.get("employees", 0)
+    if emp and emp > 0:
+        specifics.append(f"Headcount: {emp} employees")
+
+    # Product names from description
+    if desc and len(desc) > 20:
+        specifics.append(f"Product/Description: {desc[:150]}")
+
+    # News events
+    news_lower = news.lower()
+    if "acqui" in news_lower:
+        specifics.append("Event: acquisition/merger")
+    if "launch" in news_lower:
+        specifics.append("Event: product launch")
+    if any(w in news_lower for w in ["series a", "series b", "series c", "seed", "raised"]):
+        specifics.append("Event: funding round")
+    if "hir" in news_lower:
+        specifics.append("Event: hiring/growth")
+
+    # Signals
+    signals = company.get("signals", [])
+    if signals:
+        specifics.append(f"Signals: {', '.join(signals)}")
+
+    return specifics
 
 
 def _build_prompt(company: dict) -> str:
     first_name = company.get("name", "").split()[0] or "there"
     vertical = company.get("vertical", "SaaS")
     pitch = VERTICAL_PITCH.get(vertical, VERTICAL_PITCH["SaaS"])
+    specifics = _extract_specifics(company)
 
-    # Gather ALL intelligence
-    news = company.get("recent_news", "")
-    x_signals = company.get("x_signals", "")
-    description = company.get("short_description", "")
-    employees = company.get("employees", 0)
-    why_now = company.get("why_now", "")
-    hook = company.get("hook", "")
-    signals = company.get("signals", [])
+    return f"""You are Sam Anmol, CTO at Aonxi. Ex-Meta Ads ML (billions/day), ex-Apple Face ID (500M devices). You understand scale. Write like a smart peer talking to another smart operator — not a salesperson pitching a prospect.
 
-    intel_block = f"""ALL INTELLIGENCE (you MUST use at least 2 of these):
-- Company description: {description or 'N/A'}
-- Recent news: {news or 'none'}
-- Founder X posts: {x_signals or 'none'}
-- Why now: {why_now or 'N/A'}
-- Personal hook: {hook or 'N/A'}
-- Employees: {employees or 'unknown'}
-- Signals: {', '.join(signals) if signals else 'none'}
+Write a cold email to {first_name} at {company.get('company', '')}.
+
+COMPANY DATA (use ALL of this):
+- Company: {company.get('company', '')}
+- Contact: {first_name} {company.get('name', '').split()[-1] if len(company.get('name', '').split()) > 1 else ''} ({company.get('title', '')})
 - Vertical: {vertical}
-- Their pain: {company.get('pain', '')}"""
+- Employees: {company.get('employees', 'unknown')}
+- Description: {company.get('short_description', 'N/A')[:250]}
+- Recent news: {company.get('recent_news', 'none')[:300]}
+- X/Twitter: {company.get('x_signals', 'none')[:200]}
+- Why now: {company.get('why_now', 'N/A')}
+- Hook: {company.get('hook', 'N/A')}
+- Signals: {', '.join(company.get('signals', [])) or 'none'}
 
-    return f"""You are writing a cold email from Sam Anmol (CTO @ Aonxi) to {first_name} at {company.get('company', '')}.
+EXTRACTED SPECIFICS (you MUST weave at least 2 into the email):
+{chr(10).join(f'  - {s}' for s in specifics) if specifics else '  - No specifics found — use description and vertical context'}
 
-{intel_block}
-
-AONXI FOR THIS VERTICAL:
+WHAT AONXI IS (say this, not "outreach tool"):
 {pitch}
-30+ clients. Non-competing per vertical per geography.
-If they sign, no other {vertical.lower()} company in their geo gets this agent.
 
-STRICT EMAIL STRUCTURE (follow EXACTLY):
+This is NOT a tool. It is their outbound team — fully autonomous, learning after every send, getting sharper every week.
 
-LINE 1 — THE HOOK (mandatory):
-Write ONE specific fact about THIS company that proves we researched them.
-NOT "you're growing fast" or "I see you're in {vertical}."
-USE the news, description, or X signals. Be SPECIFIC.
-Good: "Saw Taktile just launched Agentic Decision Platform for banks."
-Good: "Your 111% YoY growth across 6 countries is hard to ignore."
-Good: "Your recent post about hiring 3 SDRs caught my eye."
-Bad: "I noticed you're in the SaaS space." (generic trash)
-Bad: "Running a growing company is tough." (says nothing)
+Non-competing — if they sign, no other {vertical.lower()} company in their market gets this agent.
 
-LINE 2 — THE PAIN (connect hook to their problem):
-Name what that specific fact means for their outbound.
-"That means your sales team needs to reach every mid-size bank — without hiring 10 SDRs."
-"At that growth rate, manual outbound becomes the bottleneck before you can justify a full team."
+{EXAMPLES}
 
-LINE 3 — WHAT AONXI DOES (one sentence, outcome only):
-"{pitch}"
-
-LINE 4 — PROOF + EXCLUSIVITY:
-"30+ clients. Non-competing — if you sign, no other {vertical.lower()} company in your market gets this."
-
-LINE 5 — CLOSE WITH THEIR SITUATION (not generic):
-Ask about THEIR specific reality. Reference a number, a signal, or their situation.
-Good: "You're at 88% growth — is outbound keeping up?"
-Good: "With 6 countries to cover, how's pipeline looking?"
-Bad: "Worth a conversation?" (lazy)
-Bad: "Interested?" (zero effort)
-
-SIGN-OFF: "Sam | origin@aonxi.com | aonxi.today"
+EMAIL STRUCTURE:
+1. HOOK: One sentence about something SPECIFIC to THIS company. A fact, a number, a recent event. Not "you're in SaaS." Reference their actual product, their actual news, their actual numbers.
+2. PAIN: Connect that fact to their outbound challenge. Why does THAT fact mean they need pipeline help RIGHT NOW?
+3. PITCH: The Aonxi custom agent pitch (from above). Not "we deliver meetings." Say what the agent DOES — 30+ sources, researches like an analyst, micro-tests, books meetings.
+4. DIFFERENTIATOR: "This is not a tool. It is your outbound team." + non-competing exclusivity.
+5. CLOSE: Ask about THEIR specific situation using a number or fact from their data. NOT "Worth a chat?" — that is lazy garbage.
 
 RULES:
-- Subject: "{company.get('subject', 'Quick question')}"
+- Subject must reference something specific to them (not generic)
 - Greeting: "Hi {first_name}," only
-- Under 100 words body
+- Under 120 words body
 - Plain text. No HTML. No bullets. No bold.
-- NO: "I hope", "I wanted to", "reaching out", "I came across",
-  "synergy", "leverage", "game-changing", "innovative", "seamless"
-- Every sentence must be specific to THIS company. Zero generic filler.
+- Sign-off: "Sam | origin@aonxi.com | aonxi.today"
+- FORBIDDEN PHRASES (instant -30 confidence if used): {', '.join(f'"{f}"' for f in FORBIDDEN[:12])}
+- Every sentence must fail the "could this be sent to any other company?" test. If yes, rewrite it.
 
 Unique seed: {uuid.uuid4()}
 
-Return JSON:
+Return JSON only:
 {{
-  "subject": "subject line",
+  "subject": "specific subject referencing their company/situation",
   "body": "the full email with greeting and sign-off",
   "confidence": 0-100,
-  "confidence_reasons": ["reason 1", "reason 2", "reason 3"]
+  "confidence_reasons": ["reason1", "reason2", "reason3"]
 }}
 
-confidence scoring:
-- +30 if opening references specific news/product/event
-- +20 if pain is connected to a real fact about them
-- +15 if close references their specific numbers/situation
-- +15 if vertical pitch is relevant
-- +10 if under 80 words
-- +10 if subject is under 6 words
-- -20 if any line is generic (could apply to any company)
-- -30 if opening is "I noticed you're in [vertical]" type garbage"""
+Confidence scoring:
++30 opening references specific fact (product name, revenue, event)
++20 pain connects to a real data point about them
++15 close uses their specific number or situation
++15 pitch is customized to their vertical
++10 under 100 words
+-20 any generic line (sendable to another company)
+-30 any forbidden phrase used"""
 
 
 def _parse_response(text: str) -> dict:
@@ -150,7 +219,7 @@ def _parse_response(text: str) -> dict:
 def _write_claude(prompt: str) -> dict:
     msg = claude_client.messages.create(
         model="claude-sonnet-4-20250514",
-        max_tokens=500,
+        max_tokens=600,
         messages=[{"role": "user", "content": prompt}]
     )
     return _parse_response(msg.content[0].text.strip())
@@ -169,9 +238,9 @@ def _write_grok(prompt: str) -> dict:
             "model": "grok-4-1-fast",
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.7,
-            "max_tokens": 500,
+            "max_tokens": 600,
         },
-        timeout=20,
+        timeout=25,
     )
     text = r.json()["choices"][0]["message"]["content"].strip()
     return _parse_response(text)
@@ -196,17 +265,18 @@ def write(company: dict) -> dict:
         company["email_confidence"] = data.get("confidence", 50)
         company["confidence_reasons"] = data.get("confidence_reasons", [])
     else:
+        vertical = company.get("vertical", "SaaS")
+        pitch = VERTICAL_PITCH.get(vertical, VERTICAL_PITCH["SaaS"])
         company["email_subject"] = company.get("subject", "Quick question")
         company["email_body"] = (
             f"Hi {first_name},\n\n"
             f"{company.get('why_now', '')}\n\n"
-            f"We deliver qualified meetings to your calendar — "
-            f"you pay only when one lands. 30+ clients. "
-            f"Non-competing per market.\n\n"
-            f"Worth a 15-min call this week?\n\n"
+            f"{pitch}\n\n"
+            f"Non-competing — no other {vertical.lower()} company "
+            f"in your market gets this.\n\n"
             f"Sam | origin@aonxi.com | aonxi.today"
         )
         company["email_confidence"] = 30
-        company["confidence_reasons"] = ["Fallback template — no personalization"]
+        company["confidence_reasons"] = ["Fallback template — no hyper-personalization"]
 
     return company
