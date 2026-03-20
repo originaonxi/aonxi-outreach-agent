@@ -87,7 +87,7 @@ def send_email(company: dict) -> bool:
 
 
 def show_email(company: dict, idx: int, total: int):
-    """Show a single email for review."""
+    """Show a single email for review with confidence scoring."""
     score_val = company.get("intent_score", 0)
     bar = f"{C.GREEN}{'█' * score_val}{C.DIM}{'░' * (10 - score_val)}{C.RESET}"
     signals = company.get("signals", [])
@@ -99,20 +99,36 @@ def show_email(company: dict, idx: int, total: int):
     time_color = C.GREEN if optimal else C.YELLOW
     time_label = f"{time_color}{time_str}{C.RESET}"
 
+    # Email confidence
+    conf = company.get("email_confidence", 0)
+    conf_color = C.GREEN if conf >= 80 else (C.YELLOW if conf >= 60 else C.RED)
+    conf_bar = f"{conf_color}{'●' * (conf // 10)}{'○' * (10 - conf // 10)}{C.RESET}"
+
     print()
     print(f"  {C.BOLD}{C.WHITE}┌── [{idx}/{total}] ─────────────────────────────────────────┐{C.RESET}")
     print(f"  {C.BOLD}│ {company['company']}{C.RESET} — {company['name']} ({company['title']})")
     emp = company.get('employees', '?')
     print(f"  │ {C.CYAN}{company['vertical']}{C.RESET} · {emp} emp · {loc}")
     print(f"  │ Intent: {bar} {score_val}/10  Send: {time_label}")
+    print(f"  │ Email confidence: {conf_bar} {conf_color}{conf}/100{C.RESET}")
+
+    # Confidence reasons
+    reasons = company.get("confidence_reasons", [])
+    for r in reasons[:4]:
+        if any(r.startswith(c) for c in ["+", "References", "Specific", "Under", "Names", "Uses"]):
+            print(f"  │   {C.GREEN}+ {r}{C.RESET}")
+        elif any(r.startswith(c) for c in ["-", "Generic", "No ", "Missing", "Fallback"]):
+            print(f"  │   {C.RED}- {r}{C.RESET}")
+        else:
+            print(f"  │   {C.DIM}  {r}{C.RESET}")
+
     print(f"  │ {signal_tags}")
     if company.get("recent_news"):
         print(f"  │ {C.MAGENTA}News: {company['recent_news'][:70]}...{C.RESET}")
     if company.get("x_signals"):
         print(f"  │ {C.MAGENTA}X: {company['x_signals'][:70]}...{C.RESET}")
-    if company.get("why_now"):
-        print(f"  │ {C.DIM}{company['why_now'][:80]}{C.RESET}")
     print(f"  ├──────────────────────────────────────────────────────┤")
+    print(f"  │ {C.DIM}From:{C.RESET} Sam Anmol <lifeislovesam@gmail.com>")
     print(f"  │ {C.DIM}To:{C.RESET} {company['name']} <{company['email']}>")
     print(f"  │ {C.BOLD}Subject: {company['email_subject']}{C.RESET}")
     print(f"  │")
