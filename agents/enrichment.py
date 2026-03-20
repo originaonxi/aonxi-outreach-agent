@@ -1,16 +1,18 @@
 """
-Enriches each company:
-1. Hunter — verify email, find alternatives if needed
-2. Signals — buying signals from Apollo data + title analysis
+Enriches each company with multiple data sources:
+1. Hunter — verify/find email
+2. Exa — deep company intelligence (description, news, hiring signals)
+3. Signal computation from all collected data
 """
 
 from __future__ import annotations
 import requests
-from config import HUNTER_API_KEY
+from config import HUNTER_API_KEY, EXA_API_KEY
 
 
 def enrich(company: dict) -> dict:
     company = _hunter_verify(company)
+    company = _exa_enrich(company)
     company = _compute_signals(company)
     return company
 
@@ -45,6 +47,61 @@ def _hunter_verify(company: dict) -> dict:
     return company
 
 
+def _exa_enrich(company: dict) -> dict:
+    """Use Exa deep search to find company intelligence."""
+    if not EXA_API_KEY:
+        return company
+
+    try:
+        from exa_py import Exa
+        exa = Exa(api_key=EXA_API_KEY)
+
+        domain = company.get("domain", "")
+        company_name = company.get("company", "")
+        if not company_name:
+            return company
+
+        # Deep search for company info — structured output
+        results = exa.search(
+            f"{company_name} {domain}",
+            type="auto",
+            num_results=3,
+            category="company",
+        )
+
+        if results and results.results:
+            top = results.results[0]
+            if not company.get("short_description") and hasattr(top, "text"):
+                company["short_description"] = (top.text or "")[:300]
+            company["exa_url"] = top.url if hasattr(top, "url") else ""
+
+        # Check for hiring/growth signals
+        news_results = exa.search_and_contents(
+            f"{company_name} hiring OR funding OR growth OR expansion",
+            type="auto",
+            num_results=2,
+            text={"max_characters": 500},
+        )
+
+        exa_signals = []
+        if news_results and news_results.results:
+            for nr in news_results.results:
+                text = (nr.text or "").lower()
+                if "hiring" in text or "job" in text:
+                    exa_signals.append("actively_hiring")
+                if "funding" in text or "raised" in text or "series" in text:
+                    exa_signals.append("recently_funded")
+                if "growth" in text or "expanding" in text or "launch" in text:
+                    exa_signals.append("growth_signals")
+
+        company["exa_signals"] = list(set(exa_signals))
+
+    except Exception:
+        pass
+
+    return company
+
+
 def _compute_signals(company: dict) -> dict:
     """Compute buying signals from all available data."""
     signals = []
@@ -56,7 +113,7 @@ def _compute_signals(company: dict) -> dict:
     if any(w in title_lower for w in dm_titles):
         signals.append("decision_maker")
 
-    # VP+ level (can buy without CEO approval at smaller cos)
+    # VP+ level
     vp_titles = ["vp", "vice president", "head of", "director", "cro"]
     if any(w in title_lower for w in vp_titles):
         signals.append("vp_plus")
@@ -73,7 +130,6 @@ def _compute_signals(company: dict) -> dict:
     if emp >= 20:
         signals.append("has_budget")
 
-    # Sweet spot (20-100 employees = ideal for Aonxi)
     if 20 <= emp <= 100:
         signals.append("sweet_spot_size")
 
@@ -89,7 +145,7 @@ def _compute_signals(company: dict) -> dict:
     if revenue and any(x in revenue.lower() for x in ["million", "m", "$1", "$2", "$5", "$10"]):
         signals.append("has_revenue")
 
-    # Tech stack (if they use sales/marketing tools = outbound aware)
+    # Tech stack
     tech = [t.lower() for t in company.get("technologies", [])]
     sales_tech = ["salesforce", "hubspot", "outreach", "salesloft", "apollo",
                   "pipedrive", "zoho crm", "close.io", "gong", "drift"]
@@ -101,6 +157,10 @@ def _compute_signals(company: dict) -> dict:
     growth_words = ["growth", "scaling", "building", "leading", "growing"]
     if any(w in headline for w in growth_words):
         signals.append("growth_focused")
+
+    # Exa signals (from web intelligence)
+    exa_signals = company.get("exa_signals", [])
+    signals.extend(exa_signals)
 
     company["signals"] = signals
     company["signal_count"] = len(signals)
