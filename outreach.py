@@ -5,20 +5,23 @@ aonxi-outreach — The Aonxi Outreach CLI
 Type `aonxi-outreach` → see fresh companies → y/n on each email → sent.
 
 Every run finds different companies. Every email is unique.
-You just press y or n. That's it.
+Real-time signals from Exa + Grok make it elite.
+Auto-pushes results to git after every run.
 """
 
 from __future__ import annotations
 import os
 import sys
 import smtplib
+import subprocess
 import time
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # Ensure we can import from project root
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, PROJECT_DIR)
 
 from config import (
     SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS,
@@ -29,7 +32,9 @@ from storage.learning_db import init_learning_db, get_combo_boost, save_to_icp_t
 from agents.discovery import discover
 from agents.enrichment import enrich
 from agents.intent import score
+from agents.signals import enrich_with_signals
 from agents.writer import write
+from agents.send_time import get_send_status
 
 
 # ── COLORS ──────────────────────────────────────────────
@@ -43,8 +48,6 @@ class C:
     MAGENTA = "\033[95m"
     WHITE = "\033[97m"
     RESET = "\033[0m"
-    BG_GREEN = "\033[42m"
-    BG_RED = "\033[41m"
 
 
 def banner():
@@ -52,7 +55,7 @@ def banner():
     print(f"  {C.BOLD}{C.CYAN}")
     print(f"   ┌─────────────────────────────────────────────┐")
     print(f"   │         AONXI OUTREACH AGENT                │")
-    print(f"   │         Find. Write. Send. Close.           │")
+    print(f"   │         Find. Signal. Write. Send. Close.   │")
     print(f"   └─────────────────────────────────────────────┘{C.RESET}")
     print(f"  {C.DIM}  {datetime.now().strftime('%A, %B %d %Y  %H:%M')}{C.RESET}")
     print()
@@ -86,15 +89,25 @@ def show_email(company: dict, idx: int, total: int):
     score_val = company.get("intent_score", 0)
     bar = f"{C.GREEN}{'█' * score_val}{C.DIM}{'░' * (10 - score_val)}{C.RESET}"
     signals = company.get("signals", [])
-    signal_tags = " ".join(f"{C.DIM}[{s}]{C.RESET}" for s in signals[:4])
+    signal_tags = " ".join(f"{C.DIM}[{s}]{C.RESET}" for s in signals[:5])
+
+    # Send time
+    loc = company.get("location", "")
+    optimal, time_str = get_send_status(loc)
+    time_color = C.GREEN if optimal else C.YELLOW
+    time_label = f"{time_color}{time_str}{C.RESET}"
 
     print()
     print(f"  {C.BOLD}{C.WHITE}┌── [{idx}/{total}] ─────────────────────────────────────────┐{C.RESET}")
     print(f"  {C.BOLD}│ {company['company']}{C.RESET} — {company['name']} ({company['title']})")
     emp = company.get('employees', '?')
-    loc = company.get('location', '?')
     print(f"  │ {C.CYAN}{company['vertical']}{C.RESET} · {emp} emp · {loc}")
-    print(f"  │ Intent: {bar} {score_val}/10  {signal_tags}")
+    print(f"  │ Intent: {bar} {score_val}/10  Send: {time_label}")
+    print(f"  │ {signal_tags}")
+    if company.get("recent_news"):
+        print(f"  │ {C.MAGENTA}News: {company['recent_news'][:70]}...{C.RESET}")
+    if company.get("x_signals"):
+        print(f"  │ {C.MAGENTA}X: {company['x_signals'][:70]}...{C.RESET}")
     if company.get("why_now"):
         print(f"  │ {C.DIM}{company['why_now'][:80]}{C.RESET}")
     print(f"  ├──────────────────────────────────────────────────────┤")
@@ -104,6 +117,33 @@ def show_email(company: dict, idx: int, total: int):
     for line in company["email_body"].split("\n"):
         print(f"  │ {line}")
     print(f"  {C.WHITE}└──────────────────────────────────────────────────────┘{C.RESET}")
+
+
+def git_push_results(sent: int, skipped: int, total: int):
+    """Auto-push run results to git."""
+    try:
+        os.chdir(PROJECT_DIR)
+        # Stage the database (has the new prospects + feedback data)
+        subprocess.run(["git", "add", "aonxi.db"], capture_output=True, timeout=10)
+        msg = (
+            f"Run {datetime.now().strftime('%Y-%m-%d %H:%M')}: "
+            f"{total} found, {sent} sent, {skipped} skipped"
+        )
+        result = subprocess.run(
+            ["git", "commit", "-m", msg],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            push = subprocess.run(
+                ["git", "push", "origin", "main"],
+                capture_output=True, text=True, timeout=30
+            )
+            if push.returncode == 0:
+                print(f"  {C.DIM}Git: pushed results{C.RESET}")
+            else:
+                print(f"  {C.DIM}Git: committed locally{C.RESET}")
+    except Exception:
+        pass
 
 
 def run():
@@ -127,7 +167,7 @@ def run():
     seen = get_seen_domains()
     print(f"  {C.DIM}Already contacted: {len(seen)} domains{C.RESET}")
     print()
-    print(f"  {C.BOLD}[1/3] Finding fresh companies...{C.RESET}")
+    print(f"  {C.BOLD}[1/5] Finding fresh companies...{C.RESET}")
 
     companies = discover(seen)
 
@@ -138,7 +178,7 @@ def run():
     print(f"\n  {C.GREEN}Found {len(companies)} new companies{C.RESET}")
 
     # ── ENRICH + SCORE ─────────────────────────────────
-    print(f"\n  {C.BOLD}[2/3] Scoring intent...{C.RESET}")
+    print(f"\n  {C.BOLD}[2/5] Enriching + scoring...{C.RESET}")
     for i, c in enumerate(companies):
         companies[i] = enrich(c)
         companies[i] = score(companies[i])
@@ -177,18 +217,25 @@ def run():
         print(f"\n  {C.YELLOW}No qualified prospects this run. Try again for fresh results.{C.RESET}")
         return
 
-    # ── WRITE EMAILS ───────────────────────────────────
-    print(f"\n  {C.BOLD}[3/3] Writing emails...{C.RESET}")
+    # ── REAL-TIME SIGNALS ─────────────────────────────
+    print(f"\n  {C.BOLD}[3/5] Getting real-time signals (Exa + Grok)...{C.RESET}")
+    for i, c in enumerate(qualified):
+        qualified[i] = enrich_with_signals(c)
+
+    # ── WRITE EMAILS ──────────────────────────────────
+    print(f"\n  {C.BOLD}[4/5] Writing emails (Claude + signals)...{C.RESET}")
     for i, c in enumerate(qualified):
         qualified[i] = write(c)
         save(qualified[i])
         save_to_icp_table(qualified[i])
-        print(f"    {C.DIM}Wrote: {c['company']}{C.RESET}")
+        news_tag = f" {C.MAGENTA}[+news]{C.RESET}" if c.get("recent_news") else ""
+        x_tag = f" {C.MAGENTA}[+X]{C.RESET}" if c.get("x_signals") else ""
+        print(f"    {C.DIM}Wrote: {c['company']}{C.RESET}{news_tag}{x_tag}")
 
     # ── REVIEW & SEND ─────────────────────────────────
     print()
-    print(f"  {C.BOLD}{C.CYAN}═══ REVIEW & SEND ══════════════════════════════════{C.RESET}")
-    print(f"  {C.DIM}  y = send    n = skip    q = quit{C.RESET}")
+    print(f"  {C.BOLD}{C.CYAN}[5/5] REVIEW & SEND ════════════════════════════════{C.RESET}")
+    print(f"  {C.DIM}  y = send now    n = skip    q = quit{C.RESET}")
 
     sent = 0
     skipped = 0
@@ -216,7 +263,6 @@ def run():
                 sync_airtable(company)
                 sent += 1
                 print(f"  {C.GREEN}  Sent → {company['email']}{C.RESET}")
-                # Anti-spam: wait between sends
                 if i < len(qualified):
                     wait = 15
                     print(f"  {C.DIM}  Cooling down {wait}s...{C.RESET}", end="", flush=True)
@@ -228,13 +274,16 @@ def run():
             skipped += 1
             print(f"  {C.DIM}  Skipped{C.RESET}")
 
-    # ── SUMMARY ────────────────────────────────────────
+    # ── SUMMARY + GIT PUSH ────────────────────────────
     print()
     print(f"  {C.BOLD}{C.CYAN}┌─────────────────────────────────────────────┐{C.RESET}")
     print(f"  {C.BOLD}{C.CYAN}│{C.RESET}  {C.GREEN}Sent: {sent}{C.RESET}    Skipped: {skipped}    Total: {len(qualified)}  {C.BOLD}{C.CYAN}│{C.RESET}")
     print(f"  {C.BOLD}{C.CYAN}│{C.RESET}  Replies land at: origin@aonxi.com          {C.BOLD}{C.CYAN}│{C.RESET}")
     print(f"  {C.BOLD}{C.CYAN}│{C.RESET}  Run again anytime for fresh companies       {C.BOLD}{C.CYAN}│{C.RESET}")
     print(f"  {C.BOLD}{C.CYAN}└─────────────────────────────────────────────┘{C.RESET}")
+
+    # Auto-push to git
+    git_push_results(sent, skipped, len(qualified))
     print()
 
 
