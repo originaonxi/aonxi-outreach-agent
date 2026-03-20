@@ -303,15 +303,6 @@ def health_check() -> dict:
                 health["actions"].append("EVOLVE_ANGLES: Analyze winners, generate new angles.")
                 health["status"] = "degraded"
 
-    # Check daily volume
-    c.execute("SELECT COUNT(*) FROM prospects WHERE date_added=?",
-              (date.today().isoformat(),))
-    today_count = c.fetchone()[0]
-    if today_count == 0:
-        health["issues"].append("No prospects discovered today")
-        health["actions"].append("CHECK_APOLLO: Verify API key and quota.")
-        health["status"] = "error"
-
     conn.close()
     return health
 

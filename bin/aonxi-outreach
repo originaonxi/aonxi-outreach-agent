@@ -1,0 +1,3 @@
+#!/bin/bash
+# aonxi-outreach — Run the Aonxi outreach agent from anywhere
+cd /Users/anmolsam/aonxi-outreach-agent && python3 outreach.py "$@"

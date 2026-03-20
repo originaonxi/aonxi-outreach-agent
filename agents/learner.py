@@ -70,7 +70,7 @@ def analyze_results() -> dict:
     # Get reply data from last 14 days
     two_weeks = (date.today() - timedelta(days=14)).isoformat()
     c.execute("""SELECT vertical, email_subject, email_body, intent_score,
-        got_reply, meeting_booked, title, employees, industry
+        got_reply, meeting_booked, title
         FROM prospects WHERE date_added >= ? AND sent=1""", (two_weeks,))
     rows = c.fetchall()
     conn.close()
@@ -130,28 +130,6 @@ def analyze_results() -> dict:
     for bucket, stats in score_buckets.items():
         rr = stats["replied"] / stats["sent"] * 100 if stats["sent"] > 0 else 0
         analysis["score_performance"][bucket] = {"sent": stats["sent"], "reply_rate": round(rr, 1)}
-
-    # Best company size
-    size_buckets = {"10-25": [], "26-50": [], "51-100": [], "101-300": []}
-    for r in rows:
-        emp = r[7] or 0
-        if emp <= 25:
-            b = "10-25"
-        elif emp <= 50:
-            b = "26-50"
-        elif emp <= 100:
-            b = "51-100"
-        else:
-            b = "101-300"
-        size_buckets[b].append(1 if r[4] else 0)
-
-    analysis["size_performance"] = {}
-    for size, results in size_buckets.items():
-        if results:
-            analysis["size_performance"][size] = {
-                "sent": len(results),
-                "reply_rate": round(sum(results) / len(results) * 100, 1)
-            }
 
     return analysis
 
