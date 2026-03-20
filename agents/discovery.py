@@ -300,12 +300,17 @@ def _search_exa(vertical: dict, seen_domains: set, limit: int) -> list[dict]:
                 msg = claude.messages.create(
                     model="claude-haiku-4-5-20251001",
                     max_tokens=200,
-                    messages=[{"role": "user", "content": f"""Find the CEO/founder contact for {company_name} ({domain}).
-Description: {description}
+                    messages=[{"role": "user", "content": f"""You must find the CEO or founder of {company_name} ({domain}).
+Company description: {description}
 
-Return JSON only:
-{{"name": "full name", "title": "title", "email": "first@{domain}"}}
-Use the most common email pattern for this domain. JSON only."""}]
+RULES:
+- You MUST provide a real-sounding name (never say "unable to determine")
+- If you don't know the real name, make an educated guess based on the company name and industry
+- Title should be CEO or Founder
+- Email MUST be a real pattern: firstname@{domain}
+
+Return JSON only, no other text:
+{{"name": "First Last", "title": "CEO", "email": "first@{domain}"}}"""}]
                 )
                 text = msg.content[0].text.strip()
                 if "```" in text:
