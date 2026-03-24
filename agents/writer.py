@@ -93,6 +93,125 @@ Sam | origin@aonxi.com | aonxi.today
 """
 
 
+# ── Defense Profiling ─────────────────────────────────────────────
+
+GTM_COMPANIES = {
+    "gong", "outreach", "salesloft", "hubspot", "salesforce", "apollo",
+    "zoominfo", "chorus", "clari", "drift", "intercom", "sendoso",
+    "6sense", "bombora", "demandbase", "seismic", "highspot", "clearbit",
+}
+
+DEFENSE_MODES = {
+    "MOTIVE_INFERENCE": {
+        "title_signals": {"partner", "vp", "director", "founder", "head of sales", "chief revenue", "cro"},
+        "forbidden_phrases": [
+            "excited", "reach out", "love to", "synergy", "opportunity",
+            "quick call", "touching base", "circle back", "on your radar",
+        ],
+        "bypass_strategy": "PURE_DATA",
+    },
+    "TACTIC_RECOGNITION": {
+        "title_signals": {"founder", "co-founder", "serial entrepreneur", "repeat founder", "ceo"},
+        "forbidden_phrases": [
+            "I noticed you", "I came across", "relevant to your work",
+            "fellow founder", "as a fellow", "I saw that you",
+            "your impressive", "your amazing",
+        ],
+        "bypass_strategy": "SIGNAL_HOOK",
+    },
+    "OVERLOAD_AVOIDANCE": {
+        "title_signals": {"ceo", "owner", "operator", "president", "managing director", "gm"},
+        "forbidden_phrases": [
+            "just wanted to", "hope this finds you", "I know you're busy",
+            "when you get a chance", "at your convenience", "quick question",
+        ],
+        "bypass_strategy": "PURE_DATA",
+    },
+    "SOCIAL_PROOF_SKEPTICISM": {
+        "title_signals": {"cto", "engineer", "vp engineering", "technical", "data", "architect", "developer"},
+        "forbidden_phrases": [
+            "industry-leading", "best-in-class", "proven", "trusted by",
+            "world-class", "top-tier", "leading provider", "market leader",
+        ],
+        "bypass_strategy": "CREDIBILITY_FIRST",
+    },
+}
+
+BYPASS_INSTRUCTIONS_MAP = {
+    "PURE_DATA": "Open with a concrete number. Never open with 'I'. Lead with verifiable data. No persuasion language — let the numbers do the work.",
+    "SIGNAL_HOOK": "Open by referencing something specific from the last 7 days — their post, their hire, their funding news. Prove you did real research, not a template merge.",
+    "CREDIBILITY_FIRST": "Open with exact numbers and a public-verifiable proof point (GitHub link, public metric). No round numbers. No unverifiable claims.",
+}
+
+
+def _detect_defense_mode_outreach(company: dict) -> str:
+    """Detect primary defense mode from company/contact profile."""
+    title = (company.get("title") or "").lower()
+    company_name = (company.get("company") or "").lower()
+
+    # GTM company background → MOTIVE_INFERENCE
+    if any(gtm in company_name for gtm in GTM_COMPANIES):
+        return "MOTIVE_INFERENCE"
+
+    # Check title signals in priority order
+    for mode_name in ["SOCIAL_PROOF_SKEPTICISM", "MOTIVE_INFERENCE", "TACTIC_RECOGNITION", "OVERLOAD_AVOIDANCE"]:
+        mode = DEFENSE_MODES[mode_name]
+        for signal in mode["title_signals"]:
+            if signal in title:
+                return mode_name
+
+    # Fallback based on seniority
+    if any(kw in title for kw in ("c-suite", "chief", "vp", "head")):
+        return "MOTIVE_INFERENCE"
+
+    return "TACTIC_RECOGNITION"
+
+
+def profile_defenses(target: dict) -> dict:
+    """
+    Profile a target's psychological defenses against cold outreach.
+    Returns awareness_score, defense_mode, bypass_strategy, forbidden_phrases.
+    """
+    title = (target.get("title") or "").lower()
+    company_name = (target.get("company") or "").lower()
+    employees = target.get("employees", 0) or 0
+
+    # Awareness score: 0-10
+    score = 3  # baseline
+    if any(kw in title for kw in ("vp", "director", "chief", "head", "partner")):
+        score += 3
+    elif any(kw in title for kw in ("founder", "ceo", "cto", "president")):
+        score += 2
+    if any(gtm in company_name for gtm in GTM_COMPANIES):
+        score += 3
+    if employees and employees > 500:
+        score += 1
+    elif employees and employees > 100:
+        score += 1
+
+    # Estimate inbox volume
+    estimated_volume = 50
+    if any(kw in title for kw in ("ceo", "founder", "vp", "director")):
+        estimated_volume = 150
+    if employees and employees > 200:
+        estimated_volume += 50
+    if estimated_volume >= 150:
+        score += 1
+
+    score = min(score, 10)
+
+    defense_mode = _detect_defense_mode_outreach(target)
+    mode_profile = DEFENSE_MODES[defense_mode]
+
+    return {
+        "awareness_score": score,
+        "defense_mode": defense_mode,
+        "bypass_strategy": mode_profile["bypass_strategy"],
+        "forbidden_phrases": mode_profile["forbidden_phrases"],
+        "estimated_weekly_cold_emails": estimated_volume,
+    }
+
+
 def _extract_specifics(company: dict) -> list[str]:
     """Pull every specific, usable fact about this company."""
     specifics = []
@@ -137,7 +256,7 @@ def _extract_specifics(company: dict) -> list[str]:
     return specifics
 
 
-def _build_prompt(company: dict) -> str:
+def _build_prompt(company: dict, defense: dict | None = None) -> str:
     first_name = company.get("name", "").split()[0] or "there"
     vertical = company.get("vertical", "SaaS")
     pitch = VERTICAL_PITCH.get(vertical, VERTICAL_PITCH["SaaS"])
@@ -187,6 +306,7 @@ RULES:
 - FORBIDDEN PHRASES (instant -30 confidence if used): {', '.join(f'"{f}"' for f in FORBIDDEN[:12])}
 - Every sentence must fail the "could this be sent to any other company?" test. If yes, rewrite it.
 
+{_defense_prompt_block(defense) if defense else ''}
 Unique seed: {uuid.uuid4()}
 
 Return JSON only:
@@ -205,6 +325,21 @@ Confidence scoring:
 +10 under 100 words
 -20 any generic line (sendable to another company)
 -30 any forbidden phrase used"""
+
+
+def _defense_prompt_block(defense: dict) -> str:
+    """Build the defense profiling injection for the prompt."""
+    if not defense:
+        return ""
+    banned = ", ".join(f'"{p}"' for p in defense["forbidden_phrases"])
+    bypass = BYPASS_INSTRUCTIONS_MAP[defense["bypass_strategy"]]
+    block = f"""
+DEFENSE PROFILE (awareness: {defense['awareness_score']}/10, mode: {defense['defense_mode']}):
+ADDITIONAL BANNED WORDS — never use any of these phrases: {banned}
+WRITING STRATEGY OVERRIDE: {bypass}"""
+    if defense["defense_mode"] == "OVERLOAD_AVOIDANCE":
+        block += "\nHARD OVERRIDE: Under 60 words. One specific ask. Specific calendar slot, never 'let me know'."
+    return block
 
 
 def _parse_response(text: str) -> dict:
@@ -246,9 +381,12 @@ def _write_grok(prompt: str) -> dict:
     return _parse_response(text)
 
 
-def write(company: dict) -> dict:
+def write(company: dict, use_defense_profiling: bool = True) -> dict:
     first_name = company.get("name", "").split()[0] or "there"
-    prompt = _build_prompt(company)
+
+    # Defense profiling
+    defense = profile_defenses(company) if use_defense_profiling else None
+    prompt = _build_prompt(company, defense=defense)
 
     data = None
     try:
@@ -264,6 +402,7 @@ def write(company: dict) -> dict:
         company["email_body"] = data.get("body", "")
         company["email_confidence"] = data.get("confidence", 50)
         company["confidence_reasons"] = data.get("confidence_reasons", [])
+        company["defense_profile"] = defense
     else:
         vertical = company.get("vertical", "SaaS")
         pitch = VERTICAL_PITCH.get(vertical, VERTICAL_PITCH["SaaS"])
