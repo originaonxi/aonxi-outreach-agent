@@ -23,6 +23,15 @@ import requests
 import anthropic
 from config import ANTHROPIC_API_KEY, GROK_API_KEY
 
+# MemCollab — cross-agent shared memory
+import sys as _sys
+_sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "memcollab"))
+try:
+    from memcollab import build_memory_injection
+    MEMCOLLAB_AVAILABLE = True
+except ImportError:
+    MEMCOLLAB_AVAILABLE = False
+
 claude_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 VERTICAL_PITCH = {
@@ -307,6 +316,7 @@ RULES:
 - Every sentence must fail the "could this be sent to any other company?" test. If yes, rewrite it.
 
 {_defense_prompt_block(defense) if defense else ''}
+{_memcollab_block(defense, vertical) if defense else ''}
 Unique seed: {uuid.uuid4()}
 
 Return JSON only:
@@ -325,6 +335,16 @@ Confidence scoring:
 +10 under 100 words
 -20 any generic line (sendable to another company)
 -30 any forbidden phrase used"""
+
+
+def _memcollab_block(defense: dict | None, vertical: str = "") -> str:
+    """Inject cross-agent learned patterns from MemCollab shared memory."""
+    if not defense or not MEMCOLLAB_AVAILABLE:
+        return ""
+    try:
+        return build_memory_injection(defense["defense_mode"], vertical=vertical)
+    except Exception:
+        return ""
 
 
 def _defense_prompt_block(defense: dict) -> str:

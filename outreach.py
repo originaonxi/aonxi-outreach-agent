@@ -38,6 +38,14 @@ from agents.send_time import get_send_status
 from agents.data_sources import get_api_status
 from agents.channel_advisor import recommend_channels
 
+# MemCollab — cross-agent shared memory
+sys.path.insert(0, os.path.join(PROJECT_DIR, "memcollab"))
+try:
+    from memcollab import record as mc_record, Trajectory, Outcome
+    MEMCOLLAB_AVAILABLE = True
+except ImportError:
+    MEMCOLLAB_AVAILABLE = False
+
 
 # ── COLORS ──────────────────────────────────────────────
 class C:
@@ -293,6 +301,29 @@ def run():
                 sync_airtable(company)
                 sent += 1
                 print(f"  {C.GREEN}  Sent → {company['email']}{C.RESET}")
+
+                # MemCollab: log trajectory for cross-agent learning
+                if MEMCOLLAB_AVAILABLE:
+                    try:
+                        defense = company.get("defense_profile") or {}
+                        traj = Trajectory(
+                            agent="OUTREACH",
+                            model_used="claude-sonnet-4-20250514",
+                            profile_text=f"{company.get('name','')} {company.get('company','')}",
+                            defense_mode=defense.get("defense_mode", ""),
+                            pkm_confidence=defense.get("awareness_score", 5) / 10.0,
+                            awareness_score=defense.get("awareness_score", 5),
+                            bypass_strategy=defense.get("bypass_strategy", ""),
+                            channel="email",
+                            message_text=company.get("email_body", ""),
+                            message_word_count=len(company.get("email_body", "").split()),
+                            outcome=Outcome.NO_REPLY,
+                            vertical=company.get("vertical", ""),
+                            icp_tier=str(company.get("intent_score", "")),
+                        )
+                        mc_record(traj)
+                    except Exception:
+                        pass
                 if i < len(qualified):
                     wait = 15
                     print(f"  {C.DIM}  Cooling down {wait}s...{C.RESET}", end="", flush=True)
