@@ -21,13 +21,45 @@ import imaplib
 import email
 from email.header import decode_header
 import json
+import os
+import sys
 import anthropic
 from config import ANTHROPIC_API_KEY
 from storage.db import DB_PATH
 import sqlite3
 from datetime import datetime
 
+# MemCollab — update trajectory outcomes on reply
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "memcollab"))
+try:
+    from memcollab import update_outcome as mc_update_outcome
+    MEMCOLLAB_AVAILABLE = True
+except ImportError:
+    MEMCOLLAB_AVAILABLE = False
+
+# Map reply categories → MemCollab outcomes
+CATEGORY_TO_OUTCOME = {
+    "INTERESTED": "HOT",
+    "NOT_NOW": "NOT_NOW",
+    "UNSUBSCRIBE": "UNSUBSCRIBE",
+    "BOUNCE": "UNSUBSCRIBE",
+    "OTHER": None,
+}
+
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+def _get_memcollab_tid(email_addr: str) -> str:
+    """Look up trajectory_id for a prospect email."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT memcollab_tid FROM prospects WHERE email=?", (email_addr,))
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row and row[0] else ""
+    except Exception:
+        return ""
 
 # Reply classification categories
 CATEGORIES = {
@@ -83,6 +115,16 @@ def check_replies(imap_host: str, imap_user: str, imap_pass: str) -> list[dict]:
 
                 # Update database
                 _update_prospect(from_addr, category)
+
+                # MemCollab: update trajectory outcome
+                if MEMCOLLAB_AVAILABLE:
+                    try:
+                        tid = _get_memcollab_tid(from_addr)
+                        mc_outcome = CATEGORY_TO_OUTCOME.get(category)
+                        if tid and mc_outcome:
+                            mc_update_outcome(tid, mc_outcome, reply_text=body[:200])
+                    except Exception:
+                        pass
 
         mail.logout()
     except Exception as e:

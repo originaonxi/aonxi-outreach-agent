@@ -16,6 +16,40 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from storage.db import init
 from storage.learning_db import init_learning_db, get_pending_feedback, record_feedback
 
+# MemCollab — update trajectory outcomes from manual feedback
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "memcollab"))
+try:
+    from memcollab import update_outcome as mc_update_outcome
+    MEMCOLLAB_AVAILABLE = True
+except ImportError:
+    MEMCOLLAB_AVAILABLE = False
+
+FEEDBACK_TO_OUTCOME = {
+    "reply": "HOT",
+    "meeting": "MEETING",
+    "no_reply": "NO_REPLY",
+}
+
+
+def _mc_update(email_addr: str, feedback_type: str):
+    """Update MemCollab trajectory outcome from manual feedback."""
+    if not MEMCOLLAB_AVAILABLE:
+        return
+    try:
+        import sqlite3
+        conn = sqlite3.connect(os.path.join(os.path.dirname(os.path.abspath(__file__)), "aonxi.db"))
+        c = conn.cursor()
+        c.execute("SELECT memcollab_tid FROM prospects WHERE email=?", (email_addr,))
+        row = c.fetchone()
+        conn.close()
+        tid = row[0] if row and row[0] else ""
+        if tid:
+            outcome = FEEDBACK_TO_OUTCOME.get(feedback_type)
+            if outcome:
+                mc_update_outcome(tid, outcome)
+    except Exception:
+        pass
+
 
 class C:
     BOLD = "\033[1m"
@@ -79,14 +113,17 @@ def run():
             record_feedback(p["email"], "reply")
             replies += 1
             print(f"  {C.GREEN}  Logged: replied{C.RESET}")
+            _mc_update(p["email"], "reply")
         elif action == "m":
             record_feedback(p["email"], "meeting")
             meetings += 1
             print(f"  {C.GREEN}{C.BOLD}  Logged: MEETING BOOKED{C.RESET}")
+            _mc_update(p["email"], "meeting")
         else:
             record_feedback(p["email"], "no_reply")
             no_reply += 1
             print(f"  {C.DIM}  Logged: no reply{C.RESET}")
+            _mc_update(p["email"], "no_reply")
 
         print()
 

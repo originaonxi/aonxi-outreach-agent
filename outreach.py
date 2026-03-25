@@ -60,6 +60,34 @@ class C:
     RESET = "\033[0m"
 
 
+def _store_memcollab_tid(email_addr: str, tid: str):
+    """Store trajectory_id in SQLite for reply → update_outcome() lookup."""
+    import sqlite3
+    conn = sqlite3.connect(os.path.join(PROJECT_DIR, "aonxi.db"))
+    try:
+        conn.execute("ALTER TABLE prospects ADD COLUMN memcollab_tid TEXT")
+    except Exception:
+        pass  # column already exists
+    conn.execute("UPDATE prospects SET memcollab_tid=? WHERE email=?", (tid, email_addr))
+    conn.commit()
+    conn.close()
+
+
+def _get_memcollab_tid(email_addr: str) -> str:
+    """Look up trajectory_id for a prospect email."""
+    import sqlite3
+    conn = sqlite3.connect(os.path.join(PROJECT_DIR, "aonxi.db"))
+    try:
+        c = conn.cursor()
+        c.execute("SELECT memcollab_tid FROM prospects WHERE email=?", (email_addr,))
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row and row[0] else ""
+    except Exception:
+        conn.close()
+        return ""
+
+
 def banner():
     print()
     print(f"  {C.BOLD}{C.CYAN}")
@@ -322,6 +350,8 @@ def run():
                             icp_tier=str(company.get("intent_score", "")),
                         )
                         mc_record(traj)
+                        # Store trajectory_id for reply → update_outcome()
+                        _store_memcollab_tid(company["email"], traj.trajectory_id)
                     except Exception:
                         pass
                 if i < len(qualified):
